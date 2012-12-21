@@ -4,6 +4,7 @@ $: << File.expand_path(File.dirname(__FILE__))
 
 require 'logger'
 require 'net/smtp'
+require 'openshift/local_setup_helper'
 require 'openshift/ssh'
 require 'openshift/tito'
 require 'openshift/amz'

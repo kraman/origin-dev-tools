@@ -2,7 +2,7 @@ require 'parseconfig'
 require 'pp'
 require 'aws'
 
-module OpenShift
+module Origin
   module Amazon
     def setup_rsa_key
       unless File.exists?(RSA)
@@ -132,7 +132,7 @@ module OpenShift
       end
     end
 
-    def find_instance(conn, name, use_tag=false, block_until_available=true, ssh_user="root")
+    def find_instance(conn, name, use_tag=false, block_until_available=true)
       if use_tag
         instances = conn.instances.filter('tag-key', 'Name').filter('tag-value', name)
       else
@@ -141,7 +141,7 @@ module OpenShift
       instances.each do |i|
         if (instance_status(i) != :terminated)
           puts "Found instance #{i.id}"
-          block_until_available(i, ssh_user) if block_until_available
+          block_until_available(i) if block_until_available
           return i
         end
       end
@@ -190,7 +190,7 @@ module OpenShift
       end
     end
 
-    def launch_instance(image, name, max_retries = 1, ssh_user="root")
+    def launch_instance(image, name, max_retries = 1)
       log.info "Creating new instance..."
 
       # You may have to retry creating instances since Amazon
@@ -204,7 +204,7 @@ module OpenShift
         add_tag(instance, name, 10)
 
         # Block until the instance is accessible
-        block_until_available(instance, ssh_user, true)
+        block_until_available(instance, true)
 
         return instance
       rescue ScriptError => e
@@ -229,7 +229,7 @@ module OpenShift
       end
     end
 
-    def block_until_available(instance, ssh_user="root", terminate_if_unavailable=false)
+    def block_until_available(instance, terminate_if_unavailable=false)
       log.info "Waiting for instance to be available..."
 
       (0..12).each do
@@ -245,12 +245,12 @@ module OpenShift
 
       hostname = instance.dns_name
       (1..30).each do
-        break if can_ssh?(hostname, ssh_user)
+        break if can_ssh?(hostname)
         log.info "SSH access failed... retrying"
         sleep 5
       end
 
-      unless can_ssh?(hostname, ssh_user)
+      unless can_ssh?(hostname)
         terminate_instance(instance)
         raise ScriptError, "SSH availability timed out"
       end
@@ -258,8 +258,8 @@ module OpenShift
       log.info "Instance (#{hostname}) is accessible"
     end
 
-    def is_valid?(hostname, ssh_user="root")
-      @validation_output = ssh(hostname, ACCEPT_DEVENV_SCRIPT, 60, false, 1, ssh_user)
+    def is_valid?(hostname)
+      @validation_output = ssh(hostname, ACCEPT_DEVENV_SCRIPT, 60, false, 1)
       if @validation_output == "PASS"
         return true
       else
@@ -268,8 +268,8 @@ module OpenShift
       end
     end
 
-    def get_private_ip(hostname, ssh_user="root")
-      private_ip = ssh(hostname, "facter ipaddress", 60, false, 1, ssh_user)
+    def get_private_ip(hostname)
+      private_ip = ssh(hostname, "facter ipaddress", 60, false, 1)
       if !private_ip or private_ip.strip.empty?
         puts "EXITING - AMZ instance didn't return ipaddress fact"
         exit 0
@@ -277,34 +277,34 @@ module OpenShift
       private_ip
     end
     
-    def use_private_ip(hostname, ssh_user="root")
+    def use_private_ip(hostname)
       private_ip = get_private_ip(hostname)
       puts "Updating instance facts with private ip #{private_ip}"
-      set_instance_ip(hostname, private_ip, private_ip, ssh_user)
+      set_instance_ip(hostname, private_ip, private_ip)
     end
 
-    def use_public_ip(hostname, ssh_user="root")
-      dhostname = ssh(hostname, "wget -qO- http://169.254.169.254/latest/meta-data/public-hostname", 60, false, 1, ssh_user)
-      public_ip = ssh(hostname, "wget -qO- http://169.254.169.254/latest/meta-data/public-ipv4", 60, false, 1, ssh_user)
+    def use_public_ip(hostname)
+      dhostname = ssh(hostname, "wget -qO- http://169.254.169.254/latest/meta-data/public-hostname", 60, false, 1)
+      public_ip = ssh(hostname, "wget -qO- http://169.254.169.254/latest/meta-data/public-ipv4", 60, false, 1)
       puts "Updating instance facts with public ip #{public_ip} and hostname #{dhostname}"
-      set_instance_ip(hostname, public_ip, dhostname, ssh_user)
+      set_instance_ip(hostname, public_ip, dhostname)
     end
 
-    def get_internal_hostname(hostname, ssh_user="root")
-      internal_hostname = ssh(hostname, "hostname", 60, false, 1, ssh_user)
+    def get_internal_hostname(hostname)
+      internal_hostname = ssh(hostname, "hostname", 60, false, 1)
       internal_hostname
     end
 
-    def update_facts(hostname, ssh_user="root")
+    def update_facts(hostname)
       puts "Updating instance facts and running libra-data to set the public ip..."
-      ssh(hostname, "sed -i \"s/.*PUBLIC_IP_OVERRIDE.*/#PUBLIC_IP_OVERRIDE=/g\" /etc/openshift/node.conf; sed -i \"s/.*PUBLIC_HOSTNAME_OVERRIDE.*/#PUBLIC_HOSTNAME_OVERRIDE=/g\" /etc/openshift/node.conf; /usr/libexec/mcollective/update_yaml.rb /etc/mcollective/facts.yaml; service libra-data start", 60, false, 1, ssh_user)
+      ssh(hostname, "sed -i \"s/.*PUBLIC_IP_OVERRIDE.*/#PUBLIC_IP_OVERRIDE=/g\" /etc/openshift/node.conf; sed -i \"s/.*PUBLIC_HOSTNAME_OVERRIDE.*/#PUBLIC_HOSTNAME_OVERRIDE=/g\" /etc/openshift/node.conf; /usr/libexec/mcollective/update_yaml.rb /etc/mcollective/facts.yaml; service libra-data start", 60, false, 1)
       puts 'Done'
     end
     
-    def set_instance_ip(hostname, ip, dhostname, ssh_user="root")
+    def set_instance_ip(hostname, ip, dhostname)
       print "Updating the controller to use the ip '#{ip}'..."
       # Both calls below are needed to fix a race condition between ssh and libra-data start times
-      ssh(hostname, "sed -i \"s/.*PUBLIC_IP_OVERRIDE.*/PUBLIC_IP_OVERRIDE='#{ip}'/g\" /etc/openshift/node.conf; sed -i \"s/.*PUBLIC_HOSTNAME_OVERRIDE.*/PUBLIC_HOSTNAME_OVERRIDE='#{dhostname}'/g\" /etc/openshift/node.conf; /usr/libexec/mcollective/update_yaml.rb /etc/mcollective/facts.yaml", 60, false, 1, ssh_user)
+      ssh(hostname, "sed -i \"s/.*PUBLIC_IP_OVERRIDE.*/PUBLIC_IP_OVERRIDE='#{ip}'/g\" /etc/openshift/node.conf; sed -i \"s/.*PUBLIC_HOSTNAME_OVERRIDE.*/PUBLIC_HOSTNAME_OVERRIDE='#{dhostname}'/g\" /etc/openshift/node.conf; /usr/libexec/mcollective/update_yaml.rb /etc/mcollective/facts.yaml", 60, false, 1)
       puts 'Done'
     end
 
