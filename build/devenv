@@ -3,44 +3,192 @@
 $: << File.expand_path(File.dirname(__FILE__))
 
 require 'rubygems'
-require 'thor'
 require 'fileutils'
-require 'origin_constants'
-require 'lib/openshift'
 require 'pp'
 require 'yaml'
-require 'builder'
-
-include FileUtils
+require 'thor'
+require 'setup_helper'
 
 module Origin
-  class BuilderPlugin < OpenShift::Builder
-    include OpenShift::BuilderHelper
+  class BuilderPlugin < Thor
+    include Origin::SetupHelper
+    include Thor::Actions
+    attr_reader :repo_parent_dir, :origin_rpms_dir, :distro_name, :distro_version
+    
+    def initialize(args=[], options={}, config={})
+      super(args, options, config)
+      ensure_build_requirements()
+      require 'origin_constants'
+      
+      @repo_parent_dir = File.expand_path("#{File.dirname(__FILE__)}/../../")
+      @origin_rpms_dir = File.expand_path("#{self.repo_parent_dir}/origin-rpms")
+      @distro_name = `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip
+      @distro_version = `lsb_release -r`.gsub(/Release:\s*/,'').strip
+    end
 
-    #desc "build_livecd NAME", "Creates a livecd from a launched Origin instance"
-    #method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
-    #method_option :region, :required => false, :desc => "Amazon region override (default us-east-1)"
-    #method_option :terminate, :type => :boolean, :desc => "Terminate the instance on exit"
-    #def build_livecd(name)
-    #  options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+    desc "test", "Runs all tests"
+    # Runs unit, integration and functional tests. Assumes that broker and node components
+    # are both installed and configured locally.
+    #
+    # @param options [Hash] Thor options hash
+    #   - --verbose: Enable verbose logging
+    def test
+      require "lib/openshift/test_helper"
+      require "lib/openshift/origin_local_dev_helper"      
+      extend Origin::TestHelper
+      extend Origin::OriginLocalDevHelper      
+      prepare_test_dirs
+      run_tests(method(:local_test_proc))
+    end
 
-    #  # Get the hostname from a tag lookup or assume it's SSH accessible directly
-    #  conn = connect(options.region)
-    #  instance = find_instance(conn, name, true, true, ssh_user)
-    #  hostname = instance.dns_name
-    #  puts "Done"
-    #  puts "Hostname: #{hostname}"
+    desc "build", "Builds and installs all packages locally"
+    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
+    method_option :clean, :type => :boolean, :desc => "Erase existing packages before install?"
+    method_option :update_packages, :type => :boolean, :desc => "Run yum update before install?"
+    method_option :skip_install, :type => :boolean, :default => false, :desc => "Skip package installation"
+    # Performs an complete build and install of OpenShift Origin packages.
+    #
+    # @param options [Hash] Thor options hash
+    #   - --verbose: Enable verbose logging
+    #   - --clean: Uninstall any existing Origin packages before performing the build
+    #   - --update-packages: Perform a yum update before starting the build
+    #   - --skip-install: Build packages but don't install them
+    def build
+      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+      require "lib/openshift/build_helper"
+      extend Origin::BuildHelper
+      create_local_rpm_repository(true) unless options.incremental
+      update_rpms() if options.update_packages
+      erase_rpms(get_packages.keys) if options.clean
+      
+      clone_source_repos                  
+      install_required_packages
+
+      packages_to_install = find_and_build_specs
+      Dir.glob("/tmp/tito/noarch/*.rpm").each do |file|
+        FileUtils.cp(file, origin_rpms_dir)
+      end
+      Dir.glob("/tmp/tito/x86_64/*.rpm").each do |file|
+        FileUtils.cp(file, origin_rpms_dir)
+      end
+      create_local_rpm_repository(false)
+
+      install_rpms(packages_to_install) unless options.skip_install
+    end
+    
+    desc "build_ec2 NAME BUILD_NUM", "Build a new development AMI with the given NAME"
+    method_option :register, :type => :boolean, :desc => "Register the instance"
+    method_option :terminate, :type => :boolean, :desc => "Terminate the instance on exit"
+    method_option :branch, :default => "master", :desc => "Build instance off the specified branch"
+    method_option :yum_repo, :default => "candidate", :desc => "Build instance off the specified yum repository"
+    method_option :reboot, :type => :boolean, :desc => "Reboot the instance after updating"
+    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
+    method_option :official, :type => :boolean, :desc => "For official use.  Send emails, etc."
+    method_option :exclude_broker, :type => :boolean, :desc => "Exclude broker tests"
+    method_option :exclude_runtime, :type => :boolean, :desc => "Exclude runtime tests"
+    method_option :exclude_site, :type => :boolean, :desc => "Exclude site tests"
+    method_option :exclude_rhc, :type => :boolean, :desc => "Exclude rhc tests"
+    method_option :include_web, :type => :boolean, :desc => "Include running Selenium tests"
+    method_option :include_coverage, :type => :boolean, :desc => "Include coverage analysis on unit tests"
+    method_option :include_extended, :required => false, :desc => "Include extended tests"
+    method_option :region, :required => false, :desc => "Amazon region override (default us-east-1)"
+    method_option :install_from_source, :type => :boolean, :desc => "Indicates whether to build based off origin/master"
+    method_option :install_from_local_source, :type => :boolean, :desc => "Indicates whether to build based on your local source"
+    method_option :install_required_packages, :type => :boolean, :desc => "Create an instance with all the packages required by OpenShift"
+    method_option :skip_verify, :type => :boolean, :desc => "Skip running tests to verify the build"
+    method_option :instance_type, :required => false, :desc => "Amazon machine type override (default c1.medium)"
+    method_option :extra_rpm_dir, :required => false, :dessc => "Directory containing extra rpms to be installed"
+    def build_ec2(name, build_num)
+      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+      require "lib/openshift/test_helper"
+      require "lib/openshift/origin_ec2_dev_helper"
+      require "lib/openshift/remote_helper"
+      extend Origin::TestHelper
+      extend Origin::RemoteHelper      
+      extend Origin::OriginEc2DevHelper
+
+      build_ami(name, build_num)
+    end
+    
+    desc "launch NAME", "Launches the latest DevEnv instance, tagging with NAME"
+    method_option :verifier, :type => :boolean, :desc => "Add verifier functionality (private IP setup and local tests)"
+    method_option :branch, :default => "master", :desc => "Launch a devenv image from a particular branch"
+    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
+    method_option :express_server, :type => :boolean, :desc => "Set as express server in express.conf"
+    method_option :ssh_config_verifier, :type => :boolean, :desc => "Set as verifier in .ssh/config"
+    method_option :instance_type, :required => false, :desc => "Amazon machine type override"
+    method_option :region, :required => false, :desc => "Amazon region override (default us-east-1)"
+    method_option :image_name, :required => false, :desc => "AMI ID or DEVENV name to launch"
+    def launch(name)
+      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+      launch_instance(name)
+    end
+    
+    desc "terminate TAG", "Terminates the instance with the specified tag"
+    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
+    method_option :region, :required => false, :desc => "Amazon region override (default us-east-1)"
+    def terminate(tag)
+      require "lib/openshift/remote_helper"
+      extend Origin::RemoteHelper     
+      
+      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+      terminate_instance(tag, options.region)
+    end
+    
+    desc "update", "Performs an incremental build and updates installed OpenShift Origin packages"
+    # Performs an incremental build and updates installed OpenShift Origin packages.
+    # This task can only be performed if there are code changes after a full build.
+    #
+    # @param options [Hash] Thor options hash
+    #   - --verbose: Enable verbose logging
+    def update
+      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+      incremental_build(false, false)
+      create_local_rpm_repository(false)
+    end
+
+    desc "install_required_packages", "Install all dependencies required by OpenShift Origin packages, as specified in their spec files"
+    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
+    # Task to setup RPM repositories and install all dependencies required by OpenShift Origin packages, as specified in their spec files.
+    # This task is optional and was added so that developers could snapshot their VM after the dependendencies have been installed.
+    # This task is automatically invoked when running a build.
+    #
+    # @param options [Hash] Thor options hash
+    #   - --verbose: Enable verbose logging
+    def install_required_packages
+      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
+      require "lib/openshift/build_helper"
+      extend Origin::BuildHelper
+      
+      install_rpms(["vim-enhanced","make","tig","mlocate","bash-completion"])
+      install_gems({"rake" => "","parseconfig" => "", "aws-sdk" => "", "yard" => "", "redcarpet" => "", "rspec" => "1.1.12"})
   
-    #  begin
-    #    puts "Launching live-cd build..."
-    #    out = ssh(hostname, "export PATH=/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH && cd /data/origin-server/build && rake devcd", 60 * 60 * 2, false, 1, "ec2-user")
-    #    puts "Done"
-    #  ensure
-    #    terminate_instance(instance) if options.terminate?
-    #  end
-    #end
+      if self.distro_name == 'Fedora'
+        unless File.exist?("/etc/yum.repos.d/jenkins.repo")
+          puts "Installing Jenkins repository"      
+          run "wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo"
+          run "rpm --import http://pkg.jenkins-ci.org/redhat/jenkins-ci.org.key"
+        end
+      end
 
-    desc "build_livecd", "Build a livecd"
+      packages = get_required_packages().uniq
+      install_rpms(packages, true)
+    end
+
+    desc "docs", "Build OpenShift Origin Ruby documentation"
+    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
+    # Task to build YARD documentation for all Ruby Code
+    #
+    # @param options [Hash] Thor options hash
+    #   - --verbose: Enable verbose logging
+    def docs
+      remove_dir "#{self.repo_parent_dir}/openshift-docs"
+      empty_directory "#{self.repo_parent_dir}/openshift-docs"
+      run "yardoc --private --protected --title 'Openshift Development Tools' --readme README.md --output-dir '#{self.repo_parent_dir}/openshift-docs/origin-dev-tools' #{self.repo_parent_dir}/origin-dev-tools/**/*"
+    end
+
+    desc "build_livecd", "Build a Fedora 17 Remix CD with OpenShift Origin installed"
+    # Task to build a Fedora 17 Remix CD with OpenShift Origin installed
     def build_livecd
       basedir = "/root"
       remix_dir = "/root/origin-server/remix"
@@ -68,587 +216,14 @@ module Origin
       run "/usr/sbin/setenforce 1"
       run "/sbin/service mongod start"
     end
-
-    no_tasks do
-      alias_method :old_install_required_packages, :install_required_packages
+    
+    desc "clone_source_repos BRANCH", "Clones all the source repositories needed to build OpenShift Origin"
+    method_option :clean_repos, :type => :boolean, :desc => "Delete and recreate the repositories if the already exist"
+    def clone_source_repos(branch="master")
+      require "lib/openshift/git"
+      extend Origin::Git
+      clone_repos(branch, options.clean_repos)
     end
-
-    def install_required_packages
-      puts "Install packages required for build"
-      run "yum install -y tito rubygems rubygem-rake yum-priorities git vim rubygem-thor rubygem-parseconfig make rubygem-aws-sdk tig mlocate bash-completion rubygem-yard rubygem-redcarpet ruby-devel redhat-lsb wget"
- 
-      FileUtils.rm_f "/etc/yum.repos.d/openshift-origin.repo"
-      File.open("/etc/yum.repos.d/openshift-origin.repo", 'w') do |out|
-        out << repo_string
-      end
-
-      puts "Installing required gems..."
-      run("gem install rspec -v '1.1.12'", options)
-
-      if DISTRO_NAME == 'Fedora'
-        run "wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo"
-        run "rpm --import http://pkg.jenkins-ci.org/redhat/jenkins-ci.org.key"
-      end
-
-      old_install_required_packages
-    end
-    
-    desc "local_build", "Builds and installs all packages locally"
-    method_option :verbose, :type => :boolean, :desc => "Enable verbose logging"
-    method_option :clean_packages, :type => :boolean, :desc => "Erase existing packages before install?"
-    method_option :update_packages, :type => :boolean, :desc => "Run yum update before install?"
-    method_option :incremental, :type => :boolean, :desc => "Build only the changed packages"
-    def local_build
-      options.verbose? ? @@log.level = Logger::DEBUG : @@log.level = Logger::ERROR
-      if options.incremental
-        options.retry_failure_with_tag = false
-        update
-      else
-        FileUtils.rm_f "/etc/yum.repos.d/openshift-origin.repo"
-        FileUtils.rm_f "/etc/yum.repos.d/local-openshift-origin.repo"
-        FileUtils.rm_rf "/tmp/tito"
-        
-        packages = get_packages(false, true).values
-
-        if options.clean_packages?
-          run("yum clean all", options)
-          package_names = "\"#{packages.join("\" \"")}\""
-          puts "Removing stale packages..."
-          run("yum erase -y #{package_names}", options)
-        end
-        
-        if options.update_packages?
-          puts "Updating all packages on the system..."
-          run("yum update -y --exclude='rhc*, ruby, ruby-*, qpid-*'", options)
-          puts "Done"
-        end
-
-        find_and_build_specs
-        
-        File.open("/etc/yum.repos.d/openshift-origin.repo", 'w') do |out|
-          out << repo_string
-        end
-
-        FileUtils.rm_rf "/root/origin-rpms"
-        FileUtils.mkdir_p "/root/origin-rpms"
-        File.open("/etc/yum.repos.d/local-openshift-origin.repo", 'w') do |out|
-          out << local_repo_string
-        end
-        run("cp /tmp/tito/x86_64/*.rpm /root/origin-rpms/; cp /tmp/tito/noarch/*.rpm /root/origin-rpms/; createrepo /root/origin-rpms/", options)
-        
-        packages_to_install = packages.select{ |p| not IGNORE_PACKAGES.include?(p.name) }
-        package_list = "\"#{packages_to_install.join("\" \"")}\""
-        run("yum install -y #{package_list}", options)
-
-        #mark all packages as sync'd
-        get_sync_dirs
-
-        # Create the default express.conf file
-        if !File.exists?("/root/.openshift/express.conf")
-          run("mkdir -p /root/.openshift", options)
-          run("touch /root/.openshift/express.conf", options)
-          run("echo 'libra_server=localhost' > /root/.openshift/express.conf", options)
-        end
-      end
-    end
-
-
-    no_tasks do
-
-      def local_repo_string
-        <<-EOF
-[openshift-origin]
-name    = openshift-origin
-baseurl = file:///root/origin-rpms
-gpgcheck= 0
-enabled = 1
-retries = 0
-EOF
-      end
-
-      def repo_string
-        if DISTRO_NAME == 'Fedora'
-        <<-EOF
-[openshift-origin-nightly]
-name    = openshift-origin-nightly
-baseurl = http://mirror.openshift.com/pub/origin-server/fedora-$releasever/$basearch
-gpgcheck= 0
-enabled = 1
-retries = 0
-EOF
-        else
-        <<-EOF
-[openshift-origin-nightly]
-name    = openshift-origin-nightly
-baseurl = http://mirror.openshift.com/pub/origin-server/rhel-6/$basearch
-gpgcheck= 0
-enabled = 1
-retries = 0
-EOF
-        end
-      end
-      
-      def ssh_user
-        return "ec2-user"
-      end
-
-      def download_artifacts(hostname)
-        puts "Downloading logs and screenshots..."
-        `rm -rf rhc/log; mkdir -p rhc/log/; pushd rhc/log > /dev/null; mkdir -p broker mcollective system screenshots selenium jbossas broker-profiler coverage; popd > /dev/null`
-        scp_from(hostname, "/tmp/rhc/*", "rhc/log", 60, ssh_user)
-        scp_from(hostname, "/var/www/openshift/broker/httpd/logs/access_log", "rhc/log/broker/access_log.log", 60, ssh_user)
-        scp_from(hostname, "/var/www/openshift/broker/httpd/logs/error_log", "rhc/log/broker/error_log.log", 60, ssh_user)
-        scp_from(hostname, "/var/www/openshift/broker/log/*", "rhc/log/broker", 60, ssh_user)
-        scp_from(hostname, "/var/log/openshift/user_action.log", "rhc/log/broker/user_action.log", 60, ssh_user)
-        scp_from(hostname, "/var/log/mcollective.*", "rhc/log/mcollective", 60, ssh_user)
-        scp_from(hostname, "/var/log/httpd/access_log", "rhc/log/system/access_log.log", 60, ssh_user)
-        scp_from(hostname, "/var/log/httpd/error_log", "rhc/log/system/error_log.log", 60, ssh_user)
-        scp_from(hostname, "/var/log/yum.log", "rhc/log/system/yum.log", 60, ssh_user)
-        scp_from(hostname, "/var/log/messages", "rhc/log/system/messages.log", 60, ssh_user)
-        scp_from(hostname, "/var/log/secure", "rhc/log/system/secure.log", 60, ssh_user)
-        scp_from(hostname, "/var/log/audit/audit.log", "rhc/log/system/audit.log", 60, ssh_user)
-        scp_from(hostname, "/tmp/rhc/*_coverage", "rhc/log/coverage", 60, ssh_user)
-        puts "Done"
-      end
-      
-      def validate_instance(hostname, num_tries=1)
-      end
-      
-      def update_cucumber_tests(hostname, repo_parent_dir="/root", user="root")
-        ssh(hostname, "rm -f #{repo_parent_dir}/openshift-test/tests; ln -s #{repo_parent_dir}/openshift-test/controller/test/cucumber #{repo_parent_dir}/openshift-test/tests ;", 60, false, 2, user)
-      end
-
-      def setup_verifier(hostname, branch)
-        print "Initializing git repo for syncing..."
-        init_repos(hostname, true, nil, "~", ssh_user)
-        puts "Done"
-        update_remote_tests(hostname, branch, "~", ssh_user)
-      end
-
-      def rpm_manifest(hostname, sshuser="root")
-        print "Retrieving RPM manifest.."
-        manifest = ssh(hostname, 'rpm -qa | grep -E "(rhc|openshift)" | grep -v cartridge', 60, false, 1, sshuser)
-        manifest = manifest.split("\n").sort.join(" / ")
-        # Trim down the output to 255 characters
-        manifest.gsub!(/rubygem-([a-z])/, '\1')
-        manifest.gsub!('openshift-origin-', '')
-        manifest.gsub!('mcollective-', 'mco-')
-        manifest.gsub!('.fc16', '')
-        manifest.gsub!('.noarch', '')
-        manifest.gsub!(/\.git\.[a-z0-9\.]+/, '')
-        manifest = manifest[0..254]
-        puts "Done"
-        return manifest
-      end
-
-      def test_impl(tag, hostname, instance, conn, options, image_id=nil)
-        begin
-          
-          validate_instance(hostname, 4)
-  
-          #disable_charlie(hostname) if options.disable_charlie?
-          
-          mcollective_logs(hostname) if options.mcollective_logs?
-  
-          #idle_all_gears(hostname) unless options.official?
-          
-          reset_test_dir(hostname)
-  
-          #broker_profiler(hostname) if options.profile_broker?
-  
-          test_queues = [[], [], [], []]
-            
-          extended_tests = nil
-          if options.include_extended
-            extended_tests = []
-            extended_tests = options.include_extended.split(",").map do |extended_test|
-              extended_test.strip
-            end
-          end
-  
-          if options.include_extended
-            extended_tests.each do |extended_test|
-              case extended_test
-              when 'broker'
-                test_queues[0] << ["REST API Group 1", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @broker_api1 openshift-test/tests\"", {:retry_individually => true}]
-                test_queues[1] << ["REST API Group 2", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @broker_api2 openshift-test/tests\"", {:retry_individually => true}]
-                test_queues[2] << ["REST API Group 3", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @broker_api3 openshift-test/tests\"", {:retry_individually => true}]
-                test_queues[3] << ["REST API Group 4", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @broker_api4 openshift-test/tests\"", {:retry_individually => true}]
-                
-                # The broker_key initializer in controller needs to be fixed before the test below can pass
-                #test_queues[3] << ["OpenShift Origin Broker Unit Ext 1", "cd openshift-test/broker; bundle exec rake test:oo_unit_ext1", {:retry_individually => true}]
-              when 'runtime'
-                test_queues[0] << ["Extended Runtime Group 1", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @runtime_extended1 openshift-test/tests\""]
-                test_queues[1] << ["Extended Runtime Group 2", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @runtime_extended2 openshift-test/tests\""]
-                test_queues[2] << ["Extended Runtime Group 3", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @runtime_extended3 openshift-test/tests\""]
-              when 'site'
-                puts "Warning: Site tests are currently not supported"
-              when 'rhc'
-                test_queues[0] << ["RHC Extended", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @rhc_extended openshift-test/tests\"", {:retry_individually => true}]
-                test_queues[1] << ["RHC Integration", "cd openshift-test/rhc && RHC_SERVER=localhost QUIET=1 bundle exec \"cucumber #{CUCUMBER_OPTIONS} features\"", {:retry_individually => true}]
-              else
-                puts "Not supported for extended: #{extended_test}"
-                exit 1
-              end
-            end
-          elsif options.include_coverage?
-            #test_queues[0] << ["OpenShift Origin Node Unit Coverage", "cd openshift-test/node; rake rcov; cp -a coverage /tmp/rhc/openshift_node_coverage"]
-            #test_queues[1] << ["OpenShift Origin Broker Unit and Functional Coverage", "cd openshift-test/broker; rake rcov; cp -a test/coverage /tmp/rhc/openshift_broker_coverage"]
-          elsif options.include_cucumber
-            timeout = @@SSH_TIMEOUT
-            timeout = @@SSH_TIMEOUT_OVERRIDES[options.include_cucumber] if not @@SSH_TIMEOUT_OVERRIDES[options.include_cucumber].nil?
-            test_queues[0] << [options.include_cucumber, "cucumber #{CUCUMBER_OPTIONS} -t @#{options.include_cucumber} openshift-test/tests", {:timeout => timeout}]
-          elsif options.include_web?
-            puts "Warning: Tests for the website are currently not supported"
-          else
-  
-            unless options.exclude_broker?
-              test_queues[0] << ["OpenShift Origin Broker Functional", "cd openshift-test/broker; su -c \"bundle exec rake test:functionals\""]
-              test_queues[1] << ["OpenShift Origin Broker Integration", "cd openshift-test/broker; su -c \"bundle exec rake test:integration\""]
-              test_queues[1] << ["OpenShift Origin Broker Unit 1", "cd openshift-test/broker; su -c \"bundle exec rake test:oo_unit1\""]
-              test_queues[1] << ["OpenShift Origin Broker Unit 2", "cd openshift-test/broker; su -c \"bundle exec rake test:oo_unit2\""]
-              test_queues[2] << ["Broker Cucumber", "su -c \"cucumber --strict -f html --out /tmp/rhc/broker_cucumber.html -f progress -t @broker -t ~@not-origin openshift-test/tests\""]
-            end
-
-            unless options.exclude_runtime?
-              #test_queues[3] << ["Runtime Unit", "cd openshift-test/node; su -c \"rake unit_test\""]
-              (1..4).each do |i|
-                test_queues[i-1] << ["Runtime Group #{i.to_s}", "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @runtime#{i.to_s} openshift-test/tests\""]
-              end
-            end
-  
-            unless options.exclude_site?
-            end
-
-            unless options.exclude_rhc?
-            end
-          end
-  
-          threads = []
-          failures = []
-  
-          retry_threshold = 0
-          test_queues.each do |test_queue|
-            titles = []
-            cmds = []
-            retry_individually = []
-            timeouts = []
-            test_queue.each do |test|
-              titles << test[0]
-              cmds << test[1]
-              opts = test[2] || {}
-              retry_individually << opts[:retry_individually] ? true : false
-              timeouts << opts[:timeout] ? opts[:timeout] : @@SSH_TIMEOUT
-              retry_threshold += 8
-            end
-            add_ssh_cmd_to_threads(hostname, threads, failures, titles, cmds, retry_individually, timeouts, ssh_user)
-          end
-  
-          threads.each do |t|
-            t[0].join
-          end
-  
-          failures.uniq!
-  
-          begin
-            if failures.length > 0 && failures.length <= retry_threshold 
-              #idle_all_gears(hostname)
-              retry_test_failures(hostname, failures, 2, timeout=@@SSH_TIMEOUT, ssh_user)
-            elsif failures.length > retry_threshold
-              exit 1
-            end
-  
-            # These are special tests that cannot be written to work concurrently
-            if options.include_extended
-              extended_tests.each do |extended_test|
-                case extended_test
-                when 'broker'
-                when 'runtime'
-                  singleton_queue = ['Singletons', "su -c \"cucumber #{CUCUMBER_OPTIONS} -t @singleton openshift-test/tests\""]
-                  output, exit_code = run_ssh(hostname, singleton_queue[0], singleton_queue[1], timeout=@@SSH_TIMEOUT, ssh_user)
-                  retry_test_failures(hostname, [singleton_queue], 2, timeout=@@SSH_TIMEOUT, ssh_user) if 0 != exit_code
-                when 'site'
-                when 'rhc'
-                else
-                  puts "Not supported for extended: #{extended_test}"
-                  exit 1
-                end
-              end
-            end
-  
-            validate_instance(hostname, 4)
-          end
-  
-          if options.official?
-            image_id = image_id ? image_id : instance.image_id
-            # Mark the image as verified
-            image = conn.images[image_id]
-            verify_image(image)
-  
-            puts "Sending QE ready email..."
-            begin
-              send_verified_email(image_id, image.name)
-            rescue Exception => e
-              puts "Failed sending email with message: #{e.message}"
-            end
-          end
-  
-          puts "Done"
-  
-        ensure
-          download_artifacts(hostname)
-          
-          begin
-            terminate_instance(instance) if options.terminate?
-          rescue
-            # suppress termination errors - they have been logged already
-          end
-        end
-      end
-
-      def sync_impl(name, options)
-        # Get the hostname from a tag lookup or assume it's SSH accessible directly
-        hostname = get_host_by_name_or_tag(name, options, ssh_user)
-
-        clone_commands, working_dirs = sync_available_sibling_repos(hostname, "~", ssh_user)
-        update_remote_tests(hostname, nil, "~", ssh_user)
-        
-        ret = 0
-        if !options.skip_build?
-          puts "Performing remote install..."
-
-          out, ret = ssh(hostname, "rm -rf #{working_dirs}; #{clone_commands}", 60 * 5, true, 1, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-
-          out, ret = ssh(hostname, "su -c \"yum clean metadata\"", 60 * 2, true, 2, ssh_user) if options.clean_metadata?
-          print_and_exit(ret, out) if ret != 0
-          
-          out, ret = ssh(hostname, "su -c \"cd origin-dev-tools; build/devenv update #{options.verbose? ? '--verbose' : ''} #{options.clean_metadata? ? '--include_stale' : ''} 2>&1 \"", 60 * 15, true, 1, ssh_user) if ret == 0
-          print_and_exit(ret, out) if ret != 0
-
-          out, ret = ssh(hostname, "su -c \"#{options.clean_metadata? ? "yum update -y rhc *openshift*" : ''}\"", 60 * 15, true, 1, ssh_user) if options.clean_metadata?
-          print_and_exit(ret, out) if ret != 0
-        end
-
-        puts "Done"
-      end
-  
-      def build_impl(name, build_num, image, conn, options)
-        $amz_options[:block_device_mappings] = {"/dev/sdb" => "ephemeral0"}
-
-        puts "Launching AMI: #{image.id} - #{image.name}"
-        instance = launch_instance(image, name + "_" + build_num, 1, ssh_user)
-
-        hostname = instance.dns_name
-        puts "Done"
-        puts "Hostname: #{hostname}"
-        
-        ret, out = 0, nil
-        begin
-          if options.install_required_packages?
-            puts "Starting yum update..."
-            out, ret = ssh(hostname, "su -c \"yum -y update --exclude=\\\"ruby ruby-libs ruby-rdoc ruby-irb ruby-devel ruby-qpid-* qpid-*\\\"\"", 60 * 20, true, 1, ssh_user)
-            print_and_exit(ret, out) if ret != 0
-
-            print_highlighted_output("Update Output", out)
-          end
-
-          puts "Installing packages required for build..."
-          out, ret = ssh(hostname, "su -c \"yum install -y git vim tito rubygems rubygem-thor rubygem-parseconfig ruby rubygem-rake rubygem-aws-sdk yum-priorities\"", 60 * 10, true, 1, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-          print_highlighted_output("Install Output", out)
-
-          puts "Creating mount..."
-          out, ret = ssh(hostname, "su -c \"umount -l /data ; if [ ! -b /dev/xvdb ]; then /sbin/mke2fs /dev/xvdb; fi; mkdir -p /data && mount /dev/xvdb /data && chown -R ec2-user:ec2-user /data/\"", 60 * 10, true, 1, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-
-          init_repos(hostname, true, nil, "/data", ssh_user)
-          clone_commands, working_dirs = '', ''
-
-          if options.install_from_local_source?
-            puts "Performing clean install from local source..."
-            clone_commands, working_dirs = sync_available_sibling_repos(hostname, "/data", ssh_user)
-          else
-            SIBLING_REPOS.each do |repo_name, repo_dirs|
-              working_dirs += "#{repo_name} "
-              clone_commands += "git clone #{repo_name}-bare #{repo_name}; "
-              clone_commands += "pushd #{repo_name}; git checkout #{options.branch}; popd; "
-            end
-          end
-          out, ret = ssh(hostname, "cd /data; rm -rf #{working_dirs}; #{clone_commands}", 60 * 5, true, 2, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-          puts "Done"
-
-          if options[:extra_rpm_dir]
-            if File.exist? options[:extra_rpm_dir]
-              out, ret = ssh(hostname, "mkdir -p /data/origin-server/build/extras", 60, true, 1, ssh_user)
-              files = Dir.glob("#{options[:extra_rpm_dir]}/*.rpm")
-              files.each do |file|
-                scp_to(hostname, file, "/data/origin-server/build/extras/", 60*10, 5, ssh_user)
-              end
-
-              out, ret = ssh(hostname, "su -c \"cd /data/origin-server/build/extras && yum install -y *.rpm\"", 60 * 20, true, 1, ssh_user)
-            else
-              puts "!!!Warning!!!"
-              puts "Directory containing extra rpms not found. Skipping..."
-              puts "!!!Warning!!!"
-            end
-          end
-        
-          puts "Installing pre-requisite packages"
-          out, ret = ssh(hostname, "cd /data/origin-dev-tools && su -c \"build/devenv install_required_packages\"", 60 * 30, true, 1, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-          print_highlighted_output("Install Output", out)
-
-          puts "Downgrading packages..."
-          out = ssh(hostname, "su -c \"yum -y downgrade ruby ruby-libs ruby-rdoc ruby-irb ruby-devel qpid-cpp-server qpid-cpp-client qpid-qmf ruby-qpid-qmf qpid-cpp-client-devel\"", 60 * 5, false, 1, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-          print_highlighted_output("Downgrade Output", out)
-          
-          # Add the paths to the users .bashrc file
-          out, ret = ssh(hostname, "echo \"export PATH=/usr/local/bin:/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/sbin:$PATH\" >> ~/.bashrc", 60, true, 1, ssh_user)
-
-          if options.install_from_source? || options.install_from_local_source?
-            puts "Installing Origin packages..."
-            out, ret = ssh(hostname, "cd /data/origin-dev-tools && su -c \"build/devenv local_build\"", 60 * 20, true, 1, ssh_user)
-            print_and_exit(ret, out) if ret != 0
-
-            out = ssh(hostname, "su -c \"rpm -qa | grep openshift\"", 60, false, 1, ssh_user)
-            print_highlighted_output("Installed Origin Packages", out)
-
-            puts "Installing SELinux policies..."
-            out, ret = ssh(hostname, "su -c \"yum install -y --skip-broken http://kojipkgs.fedoraproject.org/packages/selinux-policy/3.10.0/94.fc16/noarch/selinux-policy-3.10.0-94.fc16.noarch.rpm http://kojipkgs.fedoraproject.org//packages/selinux-policy/3.10.0/94.fc16/noarch/selinux-policy-targeted-3.10.0-94.fc16.noarch.rpm\"", 60 * 5, true, 1, ssh_user)
-            print_and_exit(ret, out) unless ret == 0 || out.match(/Nothing to do/)
-
-            puts "Running broker setup..."
-            out, ret = ssh(hostname, "su -c /usr/sbin/oo-setup-broker", 60 * 20, true, 1, ssh_user)
-            print_and_exit(ret, out) if ret != 0
-          end
-          
-          out, ret = ssh(hostname, "su -c \"cd /data && chown -R ec2-user:ec2-user .\"", 60 * 2, true, 1, ssh_user)
-          print_and_exit(ret, out) if ret != 0
-          puts "Done"
-      
-          image_id = nil
-          if options[:register]
-            # reset the eth0 network config to remove the HWADDR
-            puts "Removing HWADDR and DNS entries from eth0 network config..."
-            reset_eth0_dns_config(hostname)
-            
-            manifest = rpm_manifest(hostname, ssh_user)              
-            registered_ami = register_image(conn, instance, name + '_' + build_num, manifest)
-            image_id = registered_ami.id
-          end
-
-          # Register broker dns and restart the network
-          unless options.install_required_packages?  
-            post_launch_setup(hostname)
-            restart_services_remote(hostname)
-          end
-
-          unless options.skip_verify? || options.install_required_packages?
-            scp_remote_tests(hostname, options.branch, "~", ssh_user)
-            test_impl(name + '_' + build_num, hostname, instance, conn, options, image_id)
-          end
-          puts "Done."
-        ensure
-          begin
-            terminate_instance(instance) if options.terminate?
-          rescue
-            # suppress termination errors - they have been logged already
-          end
-        end
-      end
-  
-      def sanity_check_impl(tag, hostname, instance, conn, options, image_id=nil)
-        threads = []
-        failures = []
-        titles = ["OpenShift Origin Broker Sanity",
-                  "OpenShift Origin Node Unit"]
-    
-        cmds = ["su -c \"cd /var/www/openshift/broker; bundle exec rake test:sanity\"",
-                "cd openshift-test/node; su -c \"rake unit_test\""]
-        add_ssh_cmd_to_threads(hostname, threads, failures, titles, cmds, false, @@SSH_TIMEOUT, ssh_user)
-        add_ssh_cmd_to_threads(hostname, threads, failures, "Cucumber Sanity", "cucumber #{CUCUMBER_OPTIONS} -t @sanity openshift-test/tests/", false, @@SSH_TIMEOUT, ssh_user)
-    
-        threads.each do |t|
-          t[0].join
-        end
-    
-        unless failures.empty?
-          failures.uniq!
-          retry_test_failures(hostname, failures, 1, @@SSH_TIMEOUT, ssh_user)
-        end
-      end
-      
-      def update_facts_impl(hostname)
-        # Not required since this is handled by oo-setup-broker script
-      end
-      
-      def post_launch_setup(hostname)
-        # reset the eth0 network config to add the dns entries
-        puts "Registering broker dns..."
-        cmd = %{
-su -c \"echo \\\"DEVICE=eth0
-BOOTPROTO=dhcp
-ONBOOT=yes
-DNS1=127.0.0.1
-DNS2=8.8.8.8
-DNS3=8.8.4.4
-DEFROUTE=yes
-PEERROUTES=yes\\\" > /etc/sysconfig/network-scripts/ifcfg-eth0\"
-
-su -c \"/etc/init.d/network restart\"
-su -c \"service named restart\"
-
-ext_address=`/sbin/ip addr show dev eth0 | grep inet | cut -d/ -f1 | rev | cut -d \" \" -f1 | rev`
-su -c \"/usr/sbin/oo-register-dns -h broker -n $ext_address\"
-}
-        out, ret = ssh(hostname, cmd, 60 * 5, true, 1, ssh_user)
-        print_and_exit(ret, out) if ret != 0
-      end
-
-      def reset_eth0_dns_config(hostname)
-        # reset the eth0 network config to add the dns entries
-        cmd = %{
-su -c \"echo \\\"DEVICE=eth0
-BOOTPROTO=dhcp
-ONBOOT=yes\\\" > /etc/sysconfig/network-scripts/ifcfg-eth0\"
-
-su -c \"/etc/init.d/network restart\"
-su -c \"service named restart\"
-}
-        out, ret = ssh(hostname, cmd, 60 * 5, true, 1, ssh_user)
-        print_and_exit(ret, out) if ret != 0
-      end
-
-      def restart_services_remote(hostname)
-        puts "Restarting services..."
-
-        cmd = %{
-su -c \"service qpidd restart; service mcollective restart\"
-su -c \"service httpd restart; service openshift-broker restart\"
-}
-        out, ret = ssh(hostname, cmd, 60 * 5, true, 1, ssh_user)
-        print_and_exit(ret, out) if ret != 0
-
-        puts "Sleep for 30 seconds after restarting services"
-        sleep 30
-        puts "Done"
-      end
-
-      def restart_services()
-        puts "Restarting services..."
-        run("cd /var/www/openshift/broker/ ; rm -f Gemfile.lock; bundle show; cd - ;")
-        run("service qpidd restart; service mcollective restart", :verbose => true)
-        run("service httpd restart; service openshift-broker restart;", :verbose => true)
-
-        puts "Sleep for 30 seconds after restarting services"
-        sleep 30
-        puts "Done"
-      end
-
-    end # no_tasks end
-  end # class end
-end # module end
+  end
+end
 Origin::BuilderPlugin.start

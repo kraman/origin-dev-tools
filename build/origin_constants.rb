@@ -46,8 +46,6 @@ DEV_TOOLS_REPO = 'origin-dev-tools'
 DEV_TOOLS_EXT_REPO = DEV_TOOLS_REPO
 ADDTL_SIBLING_REPOS = SIBLING_REPOS_GIT_URL.keys - [DEV_TOOLS_REPO]
 
-CUCUMBER_OPTIONS = '--strict -f progress -f junit --out /tmp/rhc/cucumber_results -t ~@not-origin'
-
 DISTRO_NAME = `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip
 DISTRO_VERSION = `lsb_release -r`.gsub(/Release:\s*/,'').strip
 
@@ -60,13 +58,25 @@ if DISTRO_NAME == 'Fedora'
   ignore_packages << 'openshift-origin-util-scl' 
   ignore_packages << 'openshift-origin-cartridge-jbossas-7'
   ignore_packages << 'openshift-origin-cartridge-switchyard-0.6'
+  ignore_packages << "openshift-origin-cartridge-jbosseap-6.0"
+  SKIP_PREREQ_PACKAGES = ['java-devel']
+  CUCUMBER_OPTIONS = '--strict -f progress -f junit --out /tmp/rhc/cucumber_results -t ~@rhel-only'
+else
+  ignore_packages << 'openshift-origin-cartridge-postgresql-9.1' 
+  ignore_packages << "openshift-origin-cartridge-ruby-1.9"
+  ignore_packages << 'openshift-origin-util' 
+  ignore_packages << 'rhc'
+  ignore_packages << 'mcollective-qpid-plugin'   
+    
+  ignore_packages << "openshift-origin-cartridge-jbosseap-6.0"
+  ignore_packages << "openshift-origin-cartridge-jbossas-7"
+  ignore_packages << "openshift-origin-cartridge-jenkins-1.4"
+  ignore_packages << "openshift-origin-cartridge-switchyard-0.6"
+  SKIP_PREREQ_PACKAGES = ['java-devel','ruby-abi', 'rubygems-devel','systemd-units']
+  CUCUMBER_OPTIONS = '--strict -f progress -f junit --out /tmp/rhc/cucumber_results -t ~@f17-only'  
 end
-
-ignore_packages << "openshift-origin-cartridge-jbosseap-6.0" if `yum search jboss-eap6 2> /dev/null`.match(/No Matches found/)
-ignore_packages << "openshift-origin-cartridge-jbossas-7" if `yum search jboss-as7 2> /dev/null`.match(/No Matches found/)
-ignore_packages << "openshift-origin-cartridge-switchyard-0.6" if `yum search jboss-as7 2> /dev/null`.match(/No Matches found/)
 
 IGNORE_PACKAGES = ignore_packages
 $amz_options = {:key_name => KEY_PAIR, :instance_type => TYPE}
-  
+SSH_LOGIN = "ec2-user"  
 ACCEPT_DEVENV_SCRIPT = 'true'

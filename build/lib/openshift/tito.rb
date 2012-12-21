@@ -3,16 +3,10 @@ require 'fileutils'
 DEVENV_REGEX = /^rhc-devenv-\d+/
   
 PACKAGE_REGEX = /^([\w\.-]*)-\d+\.\d+\.\d+-\d+\.\..*:$/
-SKIP_PREREQ_PACKAGES = ['java-devel']
 
-module OpenShift
+module Origin
   module Tito
-
     def get_build_dirs
-      # Figure out what needs to be built
-      li_repo = {'li' => [FileUtils.pwd]}
-      repos = li_repo.merge(SIBLING_REPOS)
-
       all_packages = get_packages
       build_dirs = []
       repos.each do |repo_name, repo_dirs|
@@ -100,6 +94,7 @@ module OpenShift
     end
 
     def get_packages(include_subpackages=false, as_obj=false)
+      scl_prefix = self.distro_name == 'RedHatEnterpriseServer' ? "ruby193-" : ""
       packages = {}
       dirs = ['.']
       SIBLING_REPOS.each do |repo_name, repo_dirs|
@@ -113,7 +108,7 @@ module OpenShift
       dirs.each do |repo_dir|
         Dir.glob("#{repo_dir}/**/*.spec") do |file|
           unless file.start_with?('build/')
-            package = Package.new(file, File.dirname(file))
+            package = Package.new(file, File.dirname(file), scl_prefix)
             packages[package.name] = as_obj ? package : [package.dir, package.spec_path]
 
             if include_subpackages
@@ -131,9 +126,9 @@ module OpenShift
     end
 
     class Package
-      attr_reader :spec_path, :dir
-      def initialize(spec_path, dir)
-        @spec_path, @dir = spec_path, dir
+      attr_reader :spec_path, :dir, :scl_prefix
+      def initialize(spec_path, dir, scl_prefix="ruby193-")
+        @spec_path, @dir, @scl_prefix = spec_path, dir, scl_prefix
       end
       def spec_file
         @spec_file ||= File.read(@spec_path)
@@ -147,7 +142,7 @@ module OpenShift
       def build_requires
         @build_requires ||= spec_file.lines.to_a.inject([]) do |a,s|
           match = s.match(/^\s*BuildRequires:\s*(.+)$/)
-          a << Require.new(replace_globals(match[1])) if match
+          a << Require.new(replace_globals(match[1]),@scl_prefix) if match
           a
         end
       end
@@ -155,7 +150,7 @@ module OpenShift
       def requires
         @requires ||= spec_file.lines.to_a.inject([]) do |a,s|
           match = s.match(/^\s*Requires:\s*(.+)$/)
-          a << Require.new(replace_globals(match[1])) if match
+          a << Require.new(replace_globals(match[1]),@scl_prefix) if match
           a
         end
       end
@@ -240,9 +235,9 @@ module OpenShift
     end
 
     class Require
-      attr_reader :value
-      def initialize(value)
-        @value = value
+      attr_reader :value, :scl_prefix
+      def initialize(value, scl_prefix)
+        @value, @scl_prefix = value, scl_prefix
       end
       def name
         @name ||= value.
@@ -251,7 +246,7 @@ module OpenShift
           gsub(/>=.+/, ''). # strip version qualifiers
           gsub(/=.+/,'').
           gsub(/,/, '').
-          gsub('%{?scl:%scl_prefix}', 'ruby193-').strip
+          gsub('%{?scl:%scl_prefix}', @scl_prefix).strip
       end
       def yum_name
         @yum_name ||= value.
@@ -260,14 +255,14 @@ module OpenShift
           gsub(/>=.+/, '').
           gsub(/=/,'-').
           gsub(/,/, '').
-          gsub('%{?scl:%scl_prefix}', 'ruby193-').strip
+          gsub('%{?scl:%scl_prefix}', @scl_prefix).strip
       end
       def yum_name_with_version
         @yum_name ||= value.
           gsub(/\(/, '-').
           gsub(/\)/, '').
           gsub(/,/, '').
-          gsub('%{?scl:%scl_prefix}', 'ruby193-').strip
+          gsub('%{?scl:%scl_prefix}', @scl_prefix).strip
       end
       def to_s
         name
@@ -287,7 +282,6 @@ module OpenShift
         name <=> other.name
       end
     end
-
 
     def update_sync_history(current_package, current_package_contents, current_sync_dir, current_spec_file, sync_dirs)
       current_package_file = "/tmp/devenv/sync/#{current_package}"
