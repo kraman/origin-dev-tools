@@ -132,7 +132,7 @@ module Origin
       require "lib/openshift/build_helper"
       extend Origin::BuildHelper
       
-      install_rpms(["vim-enhanced","make","tig","mlocate","bash-completion"])
+      install_rpms(["vim-enhanced","make","tig","mlocate","bash-completion", "gcc"])
       install_gems({"rake" => "","parseconfig" => "", "aws-sdk" => "", "yard" => "", "redcarpet" => "", "rspec" => "1.1.12"})
   
       if self.distro_name == 'Fedora'

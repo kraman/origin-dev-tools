@@ -55,13 +55,19 @@ module Origin
     #
     # @param gem_list [Hash] Gem name to version map of gems to install locally.
     def install_gems(gem_list)
-      scl_prefix = self.distro_name == 'RedHatEnterpriseServer' ? "ruby193-" : ""
+      if self.distro_name == 'RedHatEnterpriseServer' or self.distro_name ==  'CentOS'
+        scl_prefix = "ruby193-"
+      else
+        scl_prefix = ""
+      end
 
       gem_list.each do |gem_name, version|
         if version.empty?
           `gem list -i #{gem_name}`
           is_installed = ($? == 0)
-          run "yum install -y '#{scl_prefix}rubygem-#{gem_name}'" unless is_installed
+          next if is_installed
+          success = run "yum install -y '#{scl_prefix}rubygem-#{gem_name}'"
+          run "gem install #{gem_name}" unless success
         else
           `gem list -i #{gem_name} -v #{version}`
           is_installed = ($? == 0)
@@ -103,7 +109,13 @@ retries = 0
     # 
     # @return [Array] List of package names
     def get_required_packages
-      scl_prefix = self.distro_name == 'RedHatEnterpriseServer' ? "ruby193-" : ""
+      
+      if self.distro_name == 'RedHatEnterpriseServer' or self.distro_name ==  'CentOS'
+        scl_prefix = "ruby193-"
+      else
+        scl_prefix = ""
+      end
+
       required_packages = []
       ignore_packages = get_ignore_packages
     
@@ -188,7 +200,14 @@ retries = 0
     # @param retry_failure_with_tag [Boolean] If a package fails to build, tag it and retry the build.
     # @return [Array] List of paths to the RPMs built for the package
     def build_package(package_name, build_dir, spec_file, retry_failure_with_tag=false)
-      scl_prefix = self.distro_name == 'RedHatEnterpriseServer' ? "ruby193-" : ""      
+      
+      if self.distro_name == 'RedHatEnterpriseServer' or self.distro_name ==  'CentOS'
+        scl_prefix = "ruby193-"
+      else
+        scl_prefix = ""
+      end
+
+
       remove_dir '/tmp/tito/'
       empty_dir '/tmp/tito/'
       puts "Building in #{build_dir}"

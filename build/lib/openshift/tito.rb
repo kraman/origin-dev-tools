@@ -94,7 +94,13 @@ module Origin
     end
 
     def get_packages(include_subpackages=false, as_obj=false)
-      scl_prefix = self.distro_name == 'RedHatEnterpriseServer' ? "ruby193-" : ""
+            
+      if self.distro_name == 'RedHatEnterpriseServer' or self.distro_name ==  'CentOS'
+        scl_prefix = "ruby193-"
+      else
+        scl_prefix = ""
+      end
+
       packages = {}
       dirs = ['.']
       SIBLING_REPOS.each do |repo_name, repo_dirs|

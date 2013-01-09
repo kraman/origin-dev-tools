@@ -18,7 +18,7 @@ module Origin
 
       create_openshift_deps_rpm_repository
       if RUBY_VERSION != "1.9.3"
-        if `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip == "RedHatEnterpriseServer"
+        if `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip == "RedHatEnterpriseServer" or `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip == "CentOS"
           puts "Unsupported ruby version #{RUBY_VERSION}. Please ensure that you are running within a ruby193 scl container:\n"
           puts "\tyum install scl-utils ruby193\n\tscl enable ruby193 /bin/bash\n"
           exit
@@ -31,7 +31,7 @@ module Origin
     
     # Create a RPM repository for OpenShift Origin dependencies available on the mirror.openshift.com site
     def create_openshift_deps_rpm_repository
-      if `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip == "RedHatEnterpriseServer"
+      if `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip == "RedHatEnterpriseServer" or `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip == "CentOS"
         url = "https://mirror.openshift.com/pub/openshift-origin/rhel-6/$basearch/"
       else
         url = "https://mirror.openshift.com/pub/openshift-origin/fedora-17/$basearch/"
