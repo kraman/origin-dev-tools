@@ -46,7 +46,7 @@ DEV_TOOLS_REPO = 'origin-dev-tools'
 DEV_TOOLS_EXT_REPO = DEV_TOOLS_REPO
 ADDTL_SIBLING_REPOS = SIBLING_REPOS_GIT_URL.keys - [DEV_TOOLS_REPO]
 
-CUCUMBER_OPTIONS = '--strict -f progress -f junit --out /tmp/rhc/cucumber_results -t ~@not-origin'
+CUCUMBER_OPTIONS = '--strict -f progress -f junit --out /tmp/rhc/cucumber_results -t ~@rhel-only'
 
 DISTRO_NAME = `lsb_release -i`.gsub(/Distributor ID:\s*/,'').strip
 DISTRO_VERSION = `lsb_release -r`.gsub(/Release:\s*/,'').strip
