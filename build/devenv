@@ -74,21 +74,25 @@ module Origin
 
       # Override the machine type to launch if necessary
       $amz_options[:instance_type] = options[:instance_type] if options[:instance_type]
-      $amz_options[:block_device_mappings] = {"/dev/sdb" => "ephemeral0"}
+      $amz_options[:block_device_mappings] = {
+          "/dev/sda1" => {
+              :volume_size => 10
+          },
+          "/dev/sdb" => "ephemeral0",
+      }
+      $amz_options[:user_data] = %{
+#cloud-config
+
+growpart:
+  mode: auto
+  devices: ['/']
+runcmd:
+  - [ sh, -xc, "echo 'Defaults:#{options.ssh_user} \!requiretty' >> /etc/sudoers"]
+        }
   
       # Establish a new connection
       conn = connect(options.region)
-  
-      image = nil
-      # Create a new builder instance
-      if (options.region?nil)
-        image = conn.images[AMI["us-east-1"]]
-      elsif AMI[options.region].nil?
-        puts "No AMI specified for region:" + options.region
-        exit 1
-      else
-        image = conn.images[AMI[options.region]]
-      end
+      image = conn.images["ami-b71078de"]
 
       puts "Launching AMI: #{image.id} - #{image.name}"
       instance = launch_instance(image, "oso-image-builder", 1, options.ssh_user)
@@ -98,18 +102,34 @@ module Origin
       begin
         ssh(hostname, 'sudo bash -c "setenforce 0"' , 60, false, 3, options.ssh_user)
         ssh(hostname, 'sudo bash -c "yum update -y"' , 300, false, 3, options.ssh_user)
-        ssh(hostname, 'sudo bash -c "yum install -y appliance-tools qemu-img"' , 60, false, 3, options.ssh_user)
-        scp_to(hostname, File.expand_path("#{__FILE__ }/../templates/openshift-origin.ks"), '/home/ec2-user/', 60, 5,options.ssh_user)
-        scp_to(hostname, File.expand_path("#{__FILE__ }/../templates/openshift-origin.vmx"), '/home/ec2-user/', 60, 5,options.ssh_user)
-        scp_to(hostname, File.expand_path("#{__FILE__ }/../templates/openshift-origin.ovf"), '/home/ec2-user/', 60, 5,options.ssh_user)
-        ssh(hostname, 'sudo bash -c "mv -f /home/ec2-user/openshift-origin.ks /mnt/"' , 60, false, 3, options.ssh_user)
+        ssh(hostname, 'sudo bash -c "yum install -y appliance-tools qemu-img patch"' , 60, false, 3, options.ssh_user)
+        scp_to(hostname, File.expand_path("#{__FILE__ }/../templates/openshift-origin.ks"), "/home/#{options.ssh_user}/", 60, 5,options.ssh_user)
+        scp_to(hostname, File.expand_path("#{__FILE__ }/../templates/openshift-origin.vmx"), "/home/#{options.ssh_user}/", 60, 5,options.ssh_user)
+        scp_to(hostname, File.expand_path("#{__FILE__ }/../templates/openshift-origin.ovf"), "/home/#{options.ssh_user}/", 60, 5,options.ssh_user)
+        ssh(hostname, "sudo bash -c \"mv -f /home/#{options.ssh_user}/openshift-origin.ks /mnt/\"" , 60, false, 3, options.ssh_user)
         ssh(hostname, 'sudo bash -c "mkdir -p /mnt/tmp/build && mkdir -p /mnt/openshift-origin"', 60, false, 3,options.ssh_user)
+
+ #         #Patch appliance creator bug
+ #         f=Tempfile.open('fix-appliance-creator')
+ #         begin
+ #           f.puts %{
+ # 106a107
+ # >             fstype = 'ext4'
+ #           }
+ #           f.flush
+ #           f.close
+ #           scp_to(hostname, f.path, "/tmp/appliance-creator.patch", 600, 10, options.ssh_user)
+ #         ensure
+ #           f.unlink
+ #         end
+ #         ssh(hostname, 'sudo bash -c "patch /usr/lib/python2.7/site-packages/appcreate/partitionedfs.py /tmp/appliance-creator.patch"', 60, false, 3, options.ssh_user)
+ #
         ssh(hostname, 'sudo bash -c "cd /mnt && appliance-creator -d -n openshift-origin -c openshift-origin.ks ' +
             '--format=vmdk --vmem=1024 --checksum --logfile=build.log --tmpdir=/mnt/tmp/build --cache /mnt/tmp/cache/"', 3600, false, 1, options.ssh_user)
         ssh(hostname, 'sudo bash -c "' + %{
           /bin/cp -f /mnt/openshift-origin.ks /mnt/openshift-origin/ &&
-          /bin/mv -f /home/ec2-user/openshift-origin.v* /mnt/openshift-origin/ && 
-          /bin/mv -f /home/ec2-user/openshift-origin.ovf /mnt/openshift-origin/ && 
+          /bin/mv -f /home/#{options.ssh_user}/openshift-origin.v* /mnt/openshift-origin/ &&
+          /bin/mv -f /home/#{options.ssh_user}/openshift-origin.ovf /mnt/openshift-origin/ &&
           cd /mnt/openshift-origin && tar zcf openshift-origin.tgz *
         } + '"' , 3600, false, 1, options.ssh_user)
         FileUtils.mkdir_p "vm/"

@@ -9,13 +9,11 @@ network --bootproto=dhcp --device=eth0 --onboot=on
 services --enabled=network
 part biosboot --fstype=biosboot --size=1 --ondisk sda
 part / --size 4096 --fstype ext4 --ondisk sda
-repo --name=fedora --mirrorlist=http://mirrors.fedoraproject.org/mirrorlist?repo=fedora-$releasever&arch=$basearch --excludepkgs=activemq
-repo --name=updates --mirrorlist=http://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f$releasever&arch=$basearch --excludepkgs=activemq
+repo --name=fedora --mirrorlist=http://mirrors.fedoraproject.org/mirrorlist?repo=fedora-19&arch=x86_64 --excludepkgs=activemq
+repo --name=updates --mirrorlist=http://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f19&arch=x86_64 --excludepkgs=activemq
 repo --name=jenkins --baseurl=http://pkg.jenkins-ci.org/redhat --noverifyssl
-repo --name=openshift-origin --baseurl=https://mirror.openshift.com/pub/origin-server/nightly/fedora-18/latest/x86_64/
-#repo --name=openshift-origin --baseurl=https://mirror.openshift.com/pub/openshift-origin/nightly/fedora-18/latest/x86_64/ --noverifyssl
-repo --name=openshift-origin-deps --baseurl=https://mirror.openshift.com/pub/openshift-origin/fedora-18/x86_64/ --noverifyssl
-repo --name=puppetlabs-products --baseurl=http://yum.puppetlabs.com/fedora/f17/products/x86_64 --excludepkgs=mcollective* --noverifyssl
+repo --name=openshift-origin --baseurl=https://mirror.openshift.com/pub/origin-server/nightly/fedora-19/latest/x86_64/
+repo --name=openshift-origin-deps --baseurl=https://mirror.openshift.com/pub/openshift-origin/fedora-19/x86_64/ --noverifyssl
 
 %packages --nobase
 setup
@@ -66,29 +64,29 @@ audit
 mlocate
 plymouth
 
-avahi-cname-manager.noarch                 
-openshift-origin-broker-util.noarch
-openshift-origin-cartridge-abstract.noarch
-openshift-origin-cartridge-cron.noarch 
-openshift-origin-cartridge-diy.noarch  
-openshift-origin-cartridge-mock.noarch     
-openshift-origin-cartridge-mysql.noarch
-openshift-origin-cartridge-perl.noarch
-openshift-origin-cartridge-php.noarch  
-openshift-origin-cartridge-ruby.noarch 
-openshift-origin-msg-common.noarch         
-openshift-origin-node-proxy.noarch         
-openshift-origin-node-util.noarch          
-openshift-origin-port-proxy.noarch         
-openshift-origin-util.noarch               
+avahi-cname-manager                 
+openshift-origin-broker-util
+openshift-origin-cartridge-abstract
+openshift-origin-cartridge-cron 
+openshift-origin-cartridge-diy  
+openshift-origin-cartridge-mock     
+openshift-origin-cartridge-mysql
+openshift-origin-cartridge-perl
+openshift-origin-cartridge-php  
+openshift-origin-cartridge-ruby 
+openshift-origin-msg-common         
+openshift-origin-node-proxy         
+openshift-origin-node-util          
+openshift-origin-port-proxy         
+openshift-origin-util               
 pam_openshift.x86_64                       
-rhc.noarch                                 
-rubygem-openshift-origin-common.noarch     
-rubygem-openshift-origin-console.noarch    
-rubygem-openshift-origin-controller.noarch 
-rubygem-openshift-origin-dns-avahi.noarch  
-rubygem-openshift-origin-dns-route53.noarch                                          
-rubygem-openshift-origin-node.noarch
+rhc                                 
+rubygem-openshift-origin-common     
+rubygem-openshift-origin-console    
+rubygem-openshift-origin-controller 
+rubygem-openshift-origin-dns-avahi  
+rubygem-openshift-origin-dns-route53                                          
+rubygem-openshift-origin-node
 
 zerofree
 %end
