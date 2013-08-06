@@ -22,7 +22,6 @@ OPTIONS = {
       #'openshift-origin-cartridge-ceylon',
       #'openshift-origin-cartridge-tomcat',
       'openshift-origin-cartridge-switchyard',
-      'rubygem-openshift-origin-container-libvirt',
       #'rubygem-openshift-origin-admin-console',
     ],
     "cucumber_options"        => '--strict -f progress -f html -t ~@rhel-only -t ~@jboss -t ~@not-origin',

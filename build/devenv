@@ -127,12 +127,14 @@ popd
     method_option :install_from_source, :type => :boolean, :desc => "Indicates whether to build based off origin/master"
     method_option :install_from_local_source, :type => :boolean, :desc => "Indicates whether to build based on your local source"
     method_option :install_required_packages, :type => :boolean, :desc => "Create an instance with all the packages required by OpenShift"
+    method_option :container, :type => :string, :default => 'selinux', :desc => "Container type: libvirt or selinux"
     method_option :skip_verify, :type => :boolean, :desc => "Skip running tests to verify the build"
     method_option :exclude_broker, :type => :boolean, :desc => "Exclude broker tests"
     method_option :exclude_runtime, :type => :boolean, :desc => "Exclude runtime tests"
     method_option :exclude_rhc, :type => :boolean, :desc => "Exclude rhc tests"
     method_option :include_extended, :required => false, :desc => "Include extended tests"
     method_option :ssh_user, :type => :string, :default => "root", :desc => "User to use when ssh'ing to build maching"
+    method_option :disable_selinux, :required => false, :default => false, :type => :boolean, :dessc => "Disable selinux?"    
     def build_vm(hostname)
       options.verbose? ? log.level = Logger::DEBUG : log.level = Logger::ERROR
       def_constants(guess_os("fedora-19"))
@@ -938,6 +940,9 @@ file { "update network settings - hostname":
 exec { "set hostname":
   command => "/bin/hostname broker.example.com"
 }
+file { "/etc/hostname":
+  content => "broker.example.com",
+}
 package { "bind":
   ensure => installed,
 }
@@ -965,6 +970,7 @@ class { "openshift_origin" :
   development_mode    => true,
   configure_cgroups   => true,
   eth_device          => "#{options.eth_device}",
+  node_container      => "#{options.container}",
 }
 EOF
           }, 60 * 2, true, 3, options.ssh_user)
@@ -1063,7 +1069,7 @@ sudo bash -c \"service named restart\"
       def restart_services_commands
         services = [ 'mongod', 'mcollective', 'activemq', 'cgconfig', 'cgred', 
                       'openshift-broker', 'openshift-console', 'openshift-node-web-proxy',
-                      'named', 'sshd', 'oddjobd', 'httpd', 'openshift-tc' ]
+                      'named', 'sshd', 'oddjobd', 'httpd', 'openshift-tc', 'libvirtd' ]
         cmd = []
         cmd += services.map do |service|
           "sudo bash -c \"/sbin/service #{service} stop 2>&1\";"
