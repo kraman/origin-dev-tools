@@ -141,12 +141,36 @@ class { 'openshift_origin' :
   configure_broker           => true,
   configure_node             => true,
   development_mode           => true,
-  install_login_shell        => true,
+  install_login_shell        => false,
   update_network_dns_servers => false,
   avahi_ipaddress            => '127.0.0.1',
   broker_dns_plugin          => 'avahi',
 }]]>
 		</file>
+		<file name='/usr/sbin/oo-admin-rename-host'>
+#!/bin/ruby
+
+hostname="broker-#{rand(10**5).to_s(16)}"
+fqdn="#{hostname}.openshift.local"
+system("sed -i 's/broker.openshift.local/#{fqdn}/g' /root/configure_origin.pp /etc/activemq/activemq.xml /etc/openshift/broker.conf /etc/openshift/broker-dev.conf /etc/openshift/console.conf /etc/openshift/console-dev.conf /etc/openshift/node.conf /etc/openshift/express.conf /etc/mcollective/client.cfg /etc/mcollective/server.cfg /etc/httpd/conf.d/000000_openshift_origin_broker_servername.conf /etc/httpd/conf.d/000001_openshift_origin_node_servername.conf")
+system("sed -i 's/broker/#{hostname}/g' /etc/avahi/avahi-daemon.conf")
+File.open("/etc/hostname", "w") { |f| f.write(hostname) }
+system("hostname #{hostname}")
+system("systemctl disable openshift-hostname-update.service")
+		</file>
+                <file name='/usr/lib/systemd/system/openshift-hostname-update.service'>
+[Unit]
+Description=Delayed update of hostname
+After=syslog.target 
+Before=network.target activemq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/oo-admin-rename-host
+
+[Install]
+WantedBy=multi-user.target
+                </file>
 		<!-- Add net.ifnames=0 to boot params so that we always get eth0 instead of new interface names -->
 		<file name='/etc/default/grub'><![CDATA[
 GRUB_TIMEOUT=5
@@ -154,7 +178,7 @@ GRUB_DISTRIBUTOR="$(sed 's, release .*$,,g' /etc/system-release)"
 GRUB_DEFAULT=saved
 GRUB_DISABLE_SUBMENU=true
 GRUB_TERMINAL_OUTPUT="console"
-GRUB_CMDLINE_LINUX="rd.md=0 rd.dm=0 console=tty0 $([ -x /usr/sbin/rhcrashkernel-param ] && /usr/sbin/rhcrashkernel-param || :) console=ttyS0,115200 rd.lvm.lv=VolGroup00/LogVol01 rd.lvm.lv=VolGroup00/LogVol00 vconsole.keymap=us vconsole.font=latarcyrheb-sun16 rd.luks=0 rhgb quiet net.ifnames=0"
+GRUB_CMDLINE_LINUX="rd.md=0 rd.dm=0 console=tty0 $([ -x /usr/sbin/rhcrashkernel-param ] && /usr/sbin/rhcrashkernel-param || :) console=ttyS0,115200 rd.lvm.lv=VolGroup00/LogVol01 rd.lvm.lv=VolGroup00/LogVol00 vconsole.keymap=us vconsole.font=latarcyrheb-sun16 rd.luks=0 rhgb quiet net.ifnames=0 biosdevname=0"
 GRUB_DISABLE_RECOVERY="true"]]>
                 </file>
 	</files>
@@ -171,6 +195,8 @@ GRUB_DISABLE_RECOVERY="true"]]>
 useradd -m -p sa22PBIanLs.k -G wheel openshift 2>&1 | tee -a /var/log/origin-setup.log;
 grub2-mkconfig -o /boot/grub2/grub.cfg 2>&1 | tee -a /var/log/origin-setup.log;
 systemctl enable NetworkManager-wait-online.service | tee -a /var/log/origin-setup.log;
+chmod a+x /usr/sbin/oo-admin-rename-host | tee -a /var/log/origin-setup.log;
+systemctl enable openshift-hostname-update.service | tee -a  /var/log/origin-setup.log;
 ]]>
 		</command>
 	</commands>
